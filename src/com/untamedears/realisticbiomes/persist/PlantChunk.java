@@ -1,10 +1,16 @@
 package com.untamedears.realisticbiomes.persist;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashMap;
+import java.util.Map;
 
 import org.bukkit.World;
 import org.bukkit.block.Block;
@@ -40,14 +46,14 @@ public class PlantChunk {
 
 		if (deleteOldDataStmt == null) {
 			try {
-			deleteOldDataStmt = writeConn.prepareStatement("DELETE FROM plant WHERE chunkid = ?1");
+			deleteOldDataStmt = writeConn.prepareStatement("DELETE FROM plant_data WHERE chunkid = ?1");
 			
-			loadPlantsStmt = readConn.prepareStatement("SELECT w, x, y, z, date, growth FROM plant WHERE chunkid = ?1");
+			loadPlantsStmt = readConn.prepareStatement("SELECT data FROM plant_data WHERE chunkid = ?1");
 			
-			addChunkStmt = writeConn.prepareStatement("INSERT INTO chunk (w, x, z) VALUES (?, ?, ?)");
+			addChunkStmt = writeConn.prepareStatement("INSERT INTO chunk (w, x, z) VALUES (?1, ?2, ?3)");
 			getLastChunkIdStmt = writeConn.prepareStatement("SELECT last_insert_rowid()");	
 			
-			savePlantsStmt = writeConn.prepareStatement("INSERT INTO plant (chunkid, w, x, y, z, date, growth) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)");
+			savePlantsStmt = writeConn.prepareStatement("INSERT INTO plant_data (chunkid, data) VALUES (?1, ?2)");
 			
 			deleteChunkStmt = writeConn.prepareStatement("DELETE FROM chunk WHERE id = ?1");
 			} catch (SQLException e) {
@@ -90,6 +96,90 @@ public class PlantChunk {
 		
 		return plants.get(coords);
 	}
+	
+	public byte[] chunkPlantData() {
+		ByteArrayOutputStream builder = new ByteArrayOutputStream();
+		try {
+			ObjectOutputStream writer = new ObjectOutputStream(builder);
+			writer.writeUTF("PD");
+			writer.writeShort(1);
+			
+			for (Map.Entry<Coords, Plant> pair : plants.entrySet()) {
+				Coords coords = pair.getKey();
+				Plant plant = pair.getValue();
+				writer.writeInt(coords.w);
+				writer.writeInt(coords.x);
+				writer.writeInt(coords.y);
+				writer.writeInt(coords.z);
+				writer.writeLong(plant.getUpdateTime());
+				writer.writeFloat(plant.getGrowth());
+			}
+			writer.flush();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		byte[] data = builder.toByteArray(); 
+		return data;
+	}
+	
+	public void loadPlantData(byte[] data) {
+		ByteArrayInputStream dataReader = new ByteArrayInputStream(data);
+		try {
+			ObjectInputStream reader = new ObjectInputStream(dataReader);
+			
+			String magic = reader.readUTF();
+			if (!magic.equals("PD")) {
+				// Missing plant data marker
+				System.out.println(String.format("Error loading chunk %d - plant data missing marker", index));
+				return;
+			}
+			short version = reader.readShort();
+			if (version > 1 || version < 1) {
+				// Plant data version wrong
+				System.out.println(String.format("Error loading chunk %d - plant data version mismatch (%d > 1)", index, version));
+				return;
+			}
+			
+			
+			while (reader.available() > 0) {
+				int w = reader.readInt();
+				int x = reader.readInt();
+				int y = reader.readInt();
+				int z = reader.readInt();
+				long updateTime = reader.readLong();
+				float growth = reader.readFloat();
+
+				Coords coords = new Coords(w, x, y, z);
+				Plant plant = new Plant(updateTime, growth);
+				
+				World world = plugin.getServer().getWorld(WorldID.getMCID(coords.w));
+
+				// if the plant does not correspond to an actual crop, don't load it
+				if (!plugin.getGrowthConfigs().containsKey(world.getBlockAt(x, y, z).getType())) {
+					continue;
+				}
+				
+				// grow the block
+				Block block = world.getBlockAt(x, y, z);
+				GrowthConfig growthConfig = plugin.getGrowthConfigs().get(block.getType());
+				double growthAmount = growthConfig.getRate(block) * plant.setUpdateTime(System.currentTimeMillis());
+				plant.addGrowth((float)growthAmount);
+				
+				// and update the plant growth
+				plugin.getBlockGrower().growBlock(block,coords,plant.getGrowth());
+				
+				// if the plant isn't finished growing, add it to the 
+				// plants
+				if (!(plant.getGrowth() >= 1.0)) {
+					plants.put(new Coords(w,x,y,z), plant);
+				}
+			}
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
 
 	public boolean load(Coords coords) {
 		// if the data is being loaded, it is known that this chunk is in the database
@@ -107,34 +197,8 @@ public class PlantChunk {
 			loadPlantsStmt.execute();
 			ResultSet rs = loadPlantsStmt.getResultSet();
 			while (rs.next()) {
-				int w = rs.getInt(1);
-				int x = rs.getInt(2);
-				int y = rs.getInt(3);
-				int z = rs.getInt(4);
-				long date = rs.getLong(5);
-				float growth = rs.getFloat(6);
-				
-				// if the plant does not correspond to an actual crop, don't load it
-				if (!plugin.getGrowthConfigs().containsKey(world.getBlockAt(x, y, z).getType())) {
-					continue;
-				}
-				
-				Plant plant = new Plant(date,growth);
-					
-				// grow the block
-				Block block = world.getBlockAt(x, y, z);
-				GrowthConfig growthConfig = plugin.getGrowthConfigs().get(block.getType());
-				double growthAmount = growthConfig.getRate(block) * plant.setUpdateTime(System.currentTimeMillis());
-				plant.addGrowth((float)growthAmount);
-				
-				// and update the plant growth
-				plugin.getBlockGrower().growBlock(block,coords,plant.getGrowth());
-				
-				// if the plant isn't finished growing, add it to the 
-				// plants
-				if (!(plant.getGrowth() >= 1.0)) {
-					plants.put(new Coords(w,x,y,z), plant);
-				}
+				byte[] plantData = rs.getBytes(1);
+				loadPlantData(plantData);
 			} 			
 		}
 		catch (SQLException e) {
@@ -169,19 +233,10 @@ public class PlantChunk {
 			
 			// then replace it with all the recorded plants in this chunk
 			if (!plants.isEmpty()) {
-				for (Coords coords: plants.keySet()) {
-					Plant plant = plants.get(coords);
-					
-					savePlantsStmt.setInt(1, index);
-					savePlantsStmt.setInt(2, coords.w);
-					savePlantsStmt.setInt(3, coords.x);
-					savePlantsStmt.setInt(4, coords.y);
-					savePlantsStmt.setInt(5, coords.z);
-					savePlantsStmt.setLong(6, plant.getUpdateTime());
-					savePlantsStmt.setFloat(7, plant.getGrowth());
-					
-					savePlantsStmt.execute();
-				}
+				byte[] plantData = chunkPlantData();
+				savePlantsStmt.setInt(1, index);
+				savePlantsStmt.setBytes(2, plantData);
+				savePlantsStmt.execute();
 			}
 			else {
 				// otherwise just delete the chunk entirely

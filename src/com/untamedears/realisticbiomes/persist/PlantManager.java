@@ -68,11 +68,10 @@ public class PlantManager {
 		int iTimeout = 30;
 		
 		String makeTableChunk = "CREATE TABLE IF NOT EXISTS chunk (id INTEGER PRIMARY KEY AUTOINCREMENT, w INTEGER, x INTEGER, z INTEGER)";
-		String makeTablePlant = "CREATE TABLE IF NOT EXISTS plant (chunkid INTEGER, w INTEGER, x INTEGER, y INTEGER, z INTEGER, date INTEGER, growth REAL, FOREIGN KEY(chunkid) REFERENCES chunk(id))";
+		String makeTablePlant = "CREATE TABLE IF NOT EXISTS plant_data (chunkid INTEGER PRIMARY KEY, data BLOB, FOREIGN KEY(chunkid) REFERENCES chunk(id))";
 		
 		String makeChunkCoordsIndex = "CREATE INDEX IF NOT EXISTS chunk_coords_idx ON chunk (w, x, z)";
-		String makePlantCoordsIndex = "CREATE INDEX IF NOT EXISTS plant_coords_idx ON plant (w, x, y, z)";
-		String makePlantChunkIndex = "CREATE INDEX IF NOT EXISTS plant_chunk_idx ON plant(chunkid)";
+		String makePlantDataIndex = "CREATE INDEX IF NOT EXISTS plant_data_chunk_idx ON plant_data(chunkid)";
 		
 		String vacuumDatabase = "VACUUM;";
 		
@@ -97,8 +96,7 @@ public class PlantManager {
                         stmt.executeUpdate(makeTablePlant);
                         
                         stmt.executeUpdate(makeChunkCoordsIndex);
-                        stmt.executeUpdate(makePlantCoordsIndex);
-                        stmt.executeUpdate(makePlantChunkIndex);
+                        stmt.executeUpdate(makePlantDataIndex);
 				
 			// load all chunks
 			ResultSet rs = stmt.executeQuery("SELECT id, w, x, z FROM chunk");
