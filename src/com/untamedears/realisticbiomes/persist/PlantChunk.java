@@ -23,36 +23,20 @@ public class PlantChunk {
 	boolean loaded;
 	boolean inDatabase;
 	
-	private static PreparedStatement deleteOldDataStmt = null;
 	private static PreparedStatement loadPlantsStmt = null;
-	private static PreparedStatement deleteChunkStmt = null;
-	private static PreparedStatement addChunkStmt = null;
-	private static PreparedStatement savePlantsStmt = null;
-	private static PreparedStatement getLastChunkIdStmt = null;
 	
-	public PlantChunk(RealisticBiomes plugin, Connection readConn, Connection writeConn, int index) {
+	public PlantChunk(RealisticBiomes plugin, Connection readConn, int index) {
 		this.plugin = plugin;
 		plants = null;
 		this.index = index;
 		
 		this.loaded = false;
 		this.inDatabase = false;
-
-		if (deleteOldDataStmt == null) {
-			try {
-			deleteOldDataStmt = writeConn.prepareStatement("DELETE FROM plant WHERE chunkid = ?1");
+		try {
 			
 			loadPlantsStmt = readConn.prepareStatement("SELECT w, x, y, z, date, growth FROM plant WHERE chunkid = ?1");
-			
-			addChunkStmt = writeConn.prepareStatement("INSERT INTO chunk (w, x, z) VALUES (?, ?, ?)");
-			getLastChunkIdStmt = writeConn.prepareStatement("SELECT last_insert_rowid()");	
-			
-			savePlantsStmt = writeConn.prepareStatement("INSERT INTO plant (chunkid, w, x, y, z, date, growth) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)");
-			
-			deleteChunkStmt = writeConn.prepareStatement("DELETE FROM chunk WHERE id = ?1");
-			} catch (SQLException e) {
-				e.printStackTrace();
-			}
+		} catch (SQLException e) {
+			e.printStackTrace();
 		}
 	}
 	
@@ -145,48 +129,48 @@ public class PlantChunk {
 		return true;
 	}
 	
-	public void unload(Coords chunkCoords) {
+	public void unload(Coords chunkCoords, ChunkWriter writer) {
 		if (!loaded)
 			return;
 		
 		try {
 			// if this chunk was not in the database, then add it to the database
 			if (!inDatabase) {
-				addChunkStmt.setInt(1, chunkCoords.w);
-				addChunkStmt.setInt(2, chunkCoords.x);
-				addChunkStmt.setInt(3, chunkCoords.z);
-				addChunkStmt.execute();
-				getLastChunkIdStmt.execute();
-				ResultSet rs = getLastChunkIdStmt.getResultSet();
+				writer.addChunkStmt.setInt(1, chunkCoords.w);
+				writer.addChunkStmt.setInt(2, chunkCoords.x);
+				writer.addChunkStmt.setInt(3, chunkCoords.z);
+				writer.addChunkStmt.execute();
+				writer.getLastChunkIdStmt.execute();
+				ResultSet rs = writer.getLastChunkIdStmt.getResultSet();
 				index = rs.getInt(1);
 				
 				inDatabase = true;
 			}
 			
 			// first, delete the old data
-			deleteOldDataStmt.setInt(1, index);
-			deleteOldDataStmt.execute();
+			writer.deleteOldDataStmt.setInt(1, index);
+			writer.deleteOldDataStmt.execute();
 			
 			// then replace it with all the recorded plants in this chunk
 			if (!plants.isEmpty()) {
 				for (Coords coords: plants.keySet()) {
 					Plant plant = plants.get(coords);
 					
-					savePlantsStmt.setInt(1, index);
-					savePlantsStmt.setInt(2, coords.w);
-					savePlantsStmt.setInt(3, coords.x);
-					savePlantsStmt.setInt(4, coords.y);
-					savePlantsStmt.setInt(5, coords.z);
-					savePlantsStmt.setLong(6, plant.getUpdateTime());
-					savePlantsStmt.setFloat(7, plant.getGrowth());
+					writer.savePlantsStmt.setInt(1, index);
+					writer.savePlantsStmt.setInt(2, coords.w);
+					writer.savePlantsStmt.setInt(3, coords.x);
+					writer.savePlantsStmt.setInt(4, coords.y);
+					writer.savePlantsStmt.setInt(5, coords.z);
+					writer.savePlantsStmt.setLong(6, plant.getUpdateTime());
+					writer.savePlantsStmt.setFloat(7, plant.getGrowth());
 					
-					savePlantsStmt.execute();
+					writer.savePlantsStmt.execute();
 				}
 			}
 			else {
 				// otherwise just delete the chunk entirely
-				deleteChunkStmt.setInt(1, index);
-				deleteChunkStmt.execute();
+				writer.deleteChunkStmt.setInt(1, index);
+				writer.deleteChunkStmt.execute();
 			}
 		}
 		catch (SQLException e) {

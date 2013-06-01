@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Logger;
@@ -41,6 +42,7 @@ public class PlantManager {
 	private ReentrantLock writeLock;
 	// database write thread
 	ExecutorService writeService;
+	private ChunkWriter chunkWriter;
 	
 	////================================================================================= ////
 	
@@ -108,7 +110,7 @@ public class PlantManager {
 				int x = rs.getInt(3);
 				int z = rs.getInt(4);
 				
-				PlantChunk pChunk = new PlantChunk(plugin, readConn, writeConn, id);
+				PlantChunk pChunk = new PlantChunk(plugin, readConn, id);
 				chunks.put(new Coords(w,x,0,z), pChunk);
 			}
 		}
@@ -128,6 +130,7 @@ public class PlantManager {
 		}, config.unloadBatchPeriod, config.unloadBatchPeriod);
 		
 		writeLock = new ReentrantLock();
+		chunkWriter = new ChunkWriter(writeConn);
 		writeService = Executors.newSingleThreadExecutor();
 		
 		log = plugin.getLogger();
@@ -135,27 +138,6 @@ public class PlantManager {
 	
 	// ============================================================================================
 	private Logger log;
-	// commit transaction in the writeConn database connection
-	private class commitRunnable implements Runnable {
-	    @Override  
-	    public void run() {
-	    	writeLock.lock();
-
-    		long start = System.nanoTime()/1000000/*ns/ms*/;
-			try {
-				writeConn.commit();
-				writeConn.setAutoCommit(true);
-			} catch (SQLException e) {
-				e.printStackTrace();
-			}
-			long end = System.nanoTime()/1000000/*ns/ms*/;
-			
-			if (plugin.persistConfig.logDB)
-				log.info("Committed data in "+(end-start)+" ms");
-			
-			writeLock.unlock();
-	    }
-	};
 	
 	// --------------------------------------------------------------------------------------------
 	private void unloadBatch() {
@@ -163,58 +145,81 @@ public class PlantManager {
 		if (chunksToUnload.isEmpty())
 			return;
 		
-		int count = chunksToUnload.size();
-		long start = System.nanoTime()/1000000/*ns/ms*/;
+		final ArrayList<Coords> unloadBatch = chunksToUnload;
+		chunksToUnload = new ArrayList<Coords>();
 		
 		// prepare a single transaction with all inserts
-		writeLock.lock();
-			try {
-				writeConn.setAutoCommit(false);
-			} catch (SQLException e) {
-				e.printStackTrace();
-			}
-	
-			for (Coords batchCoords:chunksToUnload) {
-				unloadChunk(batchCoords);
-			}
-		writeLock.unlock();
+		writeService.submit(new Runnable() {
+			public void run() {
+				
+				long start = System.nanoTime()/1000000/*ns/ms*/;
+				
+				int count = unloadBatch.size();
+
+				try {
+					writeConn.setAutoCommit(false);
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
 		
-		// write the changes to the database concurrently
-		writeService.submit(new commitRunnable());
-		
-		long end = System.nanoTime()/1000000/*ns/ms*/;
-		
-		if (plugin.persistConfig.logDB)
-			plugin.getLogger().info("db save: "+count+" chunks unloaded in "+(end-start)+" ms");
-		
-		chunksToUnload.clear();		
-	}
-	
-	public void saveAllAndStop() {
-		writeLock.lock();
-			try {
-				writeConn.setAutoCommit(false);
-			} catch (SQLException e) {
-				e.printStackTrace();
-			}
+				for (Coords batchCoords:unloadBatch) {
+					unloadChunk(batchCoords);
+				}
+			writeLock.unlock();
 			
-			for (Coords coords:chunks.keySet()) {
-				PlantChunk pChunk = chunks.get(coords);
-				pChunk.unload(coords);
-			}
-			
+			// write the changes to the database concurrently
+
+
+			long startCommit = System.nanoTime()/1000000/*ns/ms*/;
 			try {
 				writeConn.commit();
 				writeConn.setAutoCommit(true);
 			} catch (SQLException e) {
 				e.printStackTrace();
 			}
-		writeLock.unlock();
+			long endCommit = System.nanoTime()/1000000/*ns/ms*/;
+			
+			if (plugin.persistConfig.logDB)
+				log.info("Committed data in "+(endCommit-startCommit)+" ms");
+			
+			long end = System.nanoTime()/1000000/*ns/ms*/;
+			
+			if (plugin.persistConfig.logDB)
+				plugin.getLogger().info("db save: "+count+" chunks unloaded in "+(end-start)+" ms");
+			}
+		});		
+	}
+	
+	public void saveAllAndStop() {
+		writeService.submit(new Runnable() {
+			public void run() {
+				try {
+					writeConn.setAutoCommit(false);
+					
+					for (Coords coords:chunks.keySet()) {
+						PlantChunk pChunk = chunks.get(coords);
+						pChunk.unload(coords, chunkWriter);
+					}
+					
+					writeConn.commit();
+					writeConn.setAutoCommit(true);	
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
+			}
+		});
 		
 		chunksToUnload = null;
 		
 		unloadBatchTask.cancel();
 		writeService.shutdown();
+		try {
+			while (!writeService.isTerminated()) {
+				writeService.awaitTermination(10, TimeUnit.SECONDS);
+			}
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
 	}
 	
 	private void unloadChunk(Coords coords) {
@@ -230,7 +235,7 @@ public class PlantManager {
 		// finally, actually unload this thing
 		PlantChunk pChunk = chunks.get(coords);
 		
-		pChunk.unload(coords);
+		pChunk.unload(coords, chunkWriter);
 	}
 	
 	// --------------------------------------------------------------------------------------------
@@ -290,12 +295,9 @@ public class PlantManager {
 	public void add(Coords coords, Plant plant) {
 		Coords chunkCoords = new Coords(coords.w, coords.x/16, 0, coords.z/16);
 		
-		
 		PlantChunk pChunk = null;
 		if (!chunks.containsKey(chunkCoords)) {
-			writeLock.lock();
-				pChunk = new PlantChunk(plugin, readConn, writeConn, -1/*dummy index until assigned when added*/);
-			writeLock.unlock();
+			pChunk = new PlantChunk(plugin, readConn, -1/*dummy index until assigned when added*/);
 		}
 		else
 			pChunk = chunks.get(chunkCoords);
