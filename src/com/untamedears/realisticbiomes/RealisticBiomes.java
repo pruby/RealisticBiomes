@@ -21,6 +21,7 @@ import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import com.untamedears.realisticbiomes.listener.GrowListener;
+import com.untamedears.realisticbiomes.listener.PlantListener;
 import com.untamedears.realisticbiomes.listener.PlayerListener;
 import com.untamedears.realisticbiomes.listener.SpawnListener;
 import com.untamedears.realisticbiomes.persist.BlockGrower;
@@ -38,6 +39,7 @@ public class RealisticBiomes extends JavaPlugin implements Listener {
 	public BlockGrower blockGrower;
 	public PersistConfig persistConfig;
 	private PlantManager plantManager;
+	private HashMap<Material, PlantingConfig> plantingConfigs;
 	
 	public void onEnable() {		
 		
@@ -59,6 +61,7 @@ public class RealisticBiomes extends JavaPlugin implements Listener {
 		
 		loadPersistConfig(config);
 		loadGrowthConfigs(config);
+		loadPlantingConfigs(config.getConfigurationSection("planting"));
 		
 		// load the max log level for our logging hack
 		// if not defined then its just initalized at INFO
@@ -209,6 +212,20 @@ public class RealisticBiomes extends JavaPlugin implements Listener {
 		}
 	}
 	
+	private void loadPlantingConfigs(ConfigurationSection config) {
+		plantingConfigs = new HashMap<Material, PlantingConfig>();
+		HashMap<String, PlantingConfig> prlantingConfigNodes = new HashMap<String, PlantingConfig>();
+		
+		ConfigurationSection growthConfigSection = config.getConfigurationSection("growth");
+		for (String materialName : growthConfigSection.getKeys(false)) {
+			ConfigurationSection configSection = growthConfigSection.getConfigurationSection(materialName);
+			
+			PlantingConfig newConfig = new PlantingConfig(Material.valueOf(materialName), configSection);
+			
+			plantingConfigs.put(newConfig.getSeedType(), newConfig);
+		}
+	}
+	
 	private Object getMaterialKey(String materialName) {
 		boolean isMat = false, isTree = false, isEntity = false;
 		// test to see if the material has a "type" specifier, record the specifier and remover it
@@ -288,6 +305,7 @@ public class RealisticBiomes extends JavaPlugin implements Listener {
 		try {
             PluginManager pm = getServer().getPluginManager();
             pm.registerEvents(new GrowListener(this, materialGrowth), this);
+            pm.registerEvents(new PlantListener(this, plantingConfigs), this);
             pm.registerEvents(new SpawnListener(materialGrowth), this);
             pm.registerEvents(new PlayerListener(this, materialGrowth), this);
         }
