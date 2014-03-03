@@ -109,7 +109,7 @@ public class PlantManager {
 			this.makeTablePlantChunk = writeConn.prepareStatement(String.format("CREATE TABLE IF NOT EXISTS %s_plant_chunk" +
 							"(chunkId BIGINT, data BLOB, " +
 							"INDEX plant_chunk_idx (chunkId), " +
-							"CONSTRAINT chunkIdConstraint FOREIGN KEY (chunkId) REFERENCES %s_chunk (id))" +
+							"CONSTRAINT plantChunkIdConstraint FOREIGN KEY (chunkId) REFERENCES %s_chunk (id))" +
 							"ENGINE INNODB", config.prefix, config.prefix));
 			
 			
