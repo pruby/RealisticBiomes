@@ -52,6 +52,7 @@ public class PlantManager {
 	// prepared statements
 	PreparedStatement makeTableChunk;
 	PreparedStatement makeTablePlant;
+	PreparedStatement makeTablePlantChunk;
 	PreparedStatement selectAllFromChunk;
 	
 	private Logger log;
@@ -96,11 +97,18 @@ public class PlantManager {
 							"w INTEGER, x INTEGER, z INTEGER," +
 							"INDEX chunk_coords_idx (w, x, z)) " +
 							"ENGINE INNODB", config.prefix));
-			
+
 			// we need InnoDB storage engine or else we can't do foreign keys!
 			this.makeTablePlant = writeConn.prepareStatement(String.format("CREATE TABLE IF NOT EXISTS %s_plant" +
 							"(chunkId BIGINT, w INTEGER, x INTEGER, y INTEGER, z INTEGER, date INTEGER UNSIGNED, growth REAL, " +
 							"INDEX plant_coords_idx (w, x, y, z), INDEX plant_chunk_idx (chunkId), " +
+							"CONSTRAINT chunkIdConstraint FOREIGN KEY (chunkId) REFERENCES %s_chunk (id))" +
+							"ENGINE INNODB", config.prefix, config.prefix));
+			
+			// we need InnoDB storage engine or else we can't do foreign keys!
+			this.makeTablePlantChunk = writeConn.prepareStatement(String.format("CREATE TABLE IF NOT EXISTS %s_plant_chunk" +
+							"(chunkId BIGINT, data BLOB, " +
+							"INDEX plant_chunk_idx (chunkId), " +
 							"CONSTRAINT chunkIdConstraint FOREIGN KEY (chunkId) REFERENCES %s_chunk (id))" +
 							"ENGINE INNODB", config.prefix, config.prefix));
 			
@@ -122,6 +130,7 @@ public class PlantManager {
 
 			this.makeTableChunk.execute();
 			this.makeTablePlant.execute();
+			this.makeTablePlantChunk.execute();
 						
 		} catch (SQLException e) {
 			

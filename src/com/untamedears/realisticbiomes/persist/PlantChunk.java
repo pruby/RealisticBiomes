@@ -1,11 +1,19 @@
 package com.untamedears.realisticbiomes.persist;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.logging.Level;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 import org.bukkit.World;
 import org.bukkit.block.Block;
@@ -137,59 +145,71 @@ public class PlantChunk {
 
 		// execute the load plant statement
 		try {
-
-			ChunkWriter.loadPlantsStmt.setLong(1, index);
+			ChunkWriter.loadPlantBlockStmt.setLong(1, index);
 			RealisticBiomes.doLog(Level.FINER,
 					"PlantChunk.load() executing sql query: "
-							+ ChunkWriter.loadPlantsStmt.toString());
-			ChunkWriter.loadPlantsStmt.execute();
-
+							+ ChunkWriter.loadPlantBlockStmt.toString());
+			ChunkWriter.loadPlantBlockStmt.execute();
+			
 			ResultSet rs = ChunkWriter.loadPlantsStmt.getResultSet();
-			while (rs.next()) {
-				int w = rs.getInt("w");
-				int x = rs.getInt("x");
-				int y = rs.getInt("y");
-				int z = rs.getInt("z");
-				long date = rs.getLong(5);
-				float growth = rs.getFloat(6);
-
-				RealisticBiomes.doLog(Level.FINEST, String
-								.format("PlantChunk.load(): got result: w:%s x:%s y:%s z:%s date:%s growth:%s",
-										w, x, y, z, date, growth));
-
-				// if the plant does not correspond to an actual crop, don't
-				// load it
-				if (!plugin.getGrowthConfigs().containsKey(
-						world.getBlockAt(x, y, z).getType())) {
-					RealisticBiomes.doLog(Level.FINER, "Plantchunk.load(): plant we got from db doesn't correspond to an actual crop, not loading");
-					continue;
+			if (rs.next()) {
+				// We have a chunk-at-once store of these plants
+				byte chunkData[] = rs.getBytes("data");
+				loadPlantData(chunkData);
+			} else {
+				ChunkWriter.loadPlantsStmt.setLong(1, index);
+				RealisticBiomes.doLog(Level.FINER,
+						"PlantChunk.load() executing sql query: "
+								+ ChunkWriter.loadPlantsStmt.toString());
+				ChunkWriter.loadPlantsStmt.execute();
+	
+				rs = ChunkWriter.loadPlantsStmt.getResultSet();
+				while (rs.next()) {
+					int w = rs.getInt("w");
+					int x = rs.getInt("x");
+					int y = rs.getInt("y");
+					int z = rs.getInt("z");
+					long date = rs.getLong(5);
+					float growth = rs.getFloat(6);
+	
+					RealisticBiomes.doLog(Level.FINEST, String
+									.format("PlantChunk.load(): got result: w:%s x:%s y:%s z:%s date:%s growth:%s",
+											w, x, y, z, date, growth));
+	
+					// if the plant does not correspond to an actual crop, don't
+					// load it
+					if (!plugin.getGrowthConfigs().containsKey(
+							world.getBlockAt(x, y, z).getType())) {
+						RealisticBiomes.doLog(Level.FINER, "Plantchunk.load(): plant we got from db doesn't correspond to an actual crop, not loading");
+						continue;
+					}
+	
+					Plant plant = new Plant(date, growth);
+	
+					// TODO MARK: this code seems very similar to
+					// RealisticBiomes.growAndPersistBlock()
+					// grow the block
+					Block block = world.getBlockAt(x, y, z);
+					GrowthConfig growthConfig = plugin.getGrowthConfigs().get(
+							block.getType());
+					if (growthConfig.isPersistent()) {
+						double growthAmount = growthConfig.getRate(block)
+								* plant.setUpdateTime(System.currentTimeMillis() / 1000L);
+						plant.addGrowth((float) growthAmount);
+	
+						// and update the plant growth
+						plugin.getBlockGrower().growBlock(block, coords,
+								plant.getGrowth());
+					}
+					// if the plant isn't finished growing, add it to the
+					// plants
+					if (!(plant.getGrowth() >= 1.0)) {
+						plants.put(new Coords(w, x, y, z), plant);
+						RealisticBiomes.doLog(Level.FINER, "PlantChunk.load(): plant not finished growing, adding to plants list");
+					}
+	
+					// END MARK TODO
 				}
-
-				Plant plant = new Plant(date, growth);
-
-				// TODO MARK: this code seems very similar to
-				// RealisticBiomes.growAndPersistBlock()
-				// grow the block
-				Block block = world.getBlockAt(x, y, z);
-				GrowthConfig growthConfig = plugin.getGrowthConfigs().get(
-						block.getType());
-				if (growthConfig.isPersistent()) {
-					double growthAmount = growthConfig.getRate(block)
-							* plant.setUpdateTime(System.currentTimeMillis() / 1000L);
-					plant.addGrowth((float) growthAmount);
-
-					// and update the plant growth
-					plugin.getBlockGrower().growBlock(block, coords,
-							plant.getGrowth());
-				}
-				// if the plant isn't finished growing, add it to the
-				// plants
-				if (!(plant.getGrowth() >= 1.0)) {
-					plants.put(new Coords(w, x, y, z), plant);
-					RealisticBiomes.doLog(Level.FINER, "PlantChunk.load(): plant not finished growing, adding to plants list");
-				}
-
-				// END MARK TODO
 			}
 		} catch (SQLException e) {
 			throw new DataSourceException(
@@ -276,57 +296,17 @@ public class PlantChunk {
 			// put all the plants into the database
 			// if we are already unloaded then don't do anything
 			if (loaded) {
-				if (!plants.isEmpty()) {
-
-					// delete plants in the database for this chunk and re-add them
-					// this is OK because rb_plant does not have a autoincrement index
-					// so it won't explode. However, does this have a negative performance impact?
-					// TODO: add listener for block break event, and if its a plant, we remove it
-					// from the correct plantchunk? Right now if a plant gets destroyed before
-					// it is fully grown then it won't get remove from the database
-					ChunkWriter.deleteOldPlantsStmt.setLong(1, index);
-					ChunkWriter.deleteOldPlantsStmt.execute();
-
-					int coordCounter = 0;
-					boolean needToExec = false;
-					
-					RealisticBiomes.doLog(Level.FINER, "PlantChunk.unload(): Unloading plantchunk with index: " + this.index);
-					for (Coords coords : plants.keySet()) {
-						if (!needToExec) {
-							needToExec = true;
-						}
-						
-						Plant plant = plants.get(coords);
-
-						ChunkWriter.addPlantStmt.clearParameters();
-						ChunkWriter.addPlantStmt.setLong(1, index);
-						ChunkWriter.addPlantStmt.setInt(2, coords.w);
-						ChunkWriter.addPlantStmt.setInt(3, coords.x);
-						ChunkWriter.addPlantStmt.setInt(4, coords.y);
-						ChunkWriter.addPlantStmt.setInt(5, coords.z);
-						ChunkWriter.addPlantStmt.setLong(6,
-								plant.getUpdateTime());
-						ChunkWriter.addPlantStmt.setFloat(7,
-								plant.getGrowth());
-						
-						ChunkWriter.addPlantStmt.addBatch();
-						
-						// execute the statement if we hit 1000 batches
-						if ((coordCounter + 1) % 1000 == 0) {
-							
-							ChunkWriter.addPlantStmt.executeBatch();
-							coordCounter = 0;
-							needToExec = false;
-						}
-						
-					} // end for
-					
-					// if we have left over statements afterwards, execute them
-					if (needToExec) {
-						ChunkWriter.addPlantStmt.executeBatch();
-					}
-					
-				} 
+				// TODO: add listener for block break event, and if its a plant, we remove it
+				// from the correct plantchunk? Right now if a plant gets destroyed before
+				// it is fully grown then it won't get remove from the database
+				ChunkWriter.deleteOldPlantsStmt.setLong(1, index);
+				ChunkWriter.deleteOldPlantsStmt.execute();
+				ChunkWriter.deleteOldOldPlantsStmt.setLong(1, index);
+				ChunkWriter.deleteOldOldPlantsStmt.execute();
+				
+				ChunkWriter.writePlantBlockStmt.setLong(1, index);
+				ChunkWriter.writePlantBlockStmt.setBytes(2, chunkPlantData());
+				ChunkWriter.writePlantBlockStmt.execute();
 			}
 		} catch (SQLException e) {
 			throw new DataSourceException(
@@ -338,6 +318,96 @@ public class PlantChunk {
 
 		plants = new HashMap<Coords, Plant>();
 		loaded = false;
+	}
+	
+	public byte[] chunkPlantData() {
+		ByteArrayOutputStream builder = new ByteArrayOutputStream();
+		try {
+			ObjectOutputStream writer = new ObjectOutputStream(new GZIPOutputStream(builder));
+			writer.writeUTF("PD");
+			writer.writeShort(1);
+			
+			for (Map.Entry<Coords, Plant> pair : plants.entrySet()) {
+				Coords coords = pair.getKey();
+				Plant plant = pair.getValue();
+				writer.writeInt(coords.w);
+				writer.writeInt(coords.x);
+				writer.writeInt(coords.y);
+				writer.writeInt(coords.z);
+				writer.writeLong(plant.getUpdateTime());
+				writer.writeFloat(plant.getGrowth());
+			}
+			writer.flush();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		byte[] data = builder.toByteArray(); 
+		return data;
+	}
+	
+	public void loadPlantData(byte[] data) {
+		ByteArrayInputStream dataReader = new ByteArrayInputStream(data);
+		try {
+			ObjectInputStream reader = new ObjectInputStream(new GZIPInputStream(dataReader));
+			
+			String magic = reader.readUTF();
+			if (!magic.equals("PD")) {
+				// Missing plant data marker
+				System.out.println(String.format("Error loading chunk %d - plant data missing marker", index));
+				return;
+			}
+			short version = reader.readShort();
+			if (version > 1 || version < 1) {
+				// Plant data version wrong
+				System.out.println(String.format("Error loading chunk %d - plant data version mismatch (%d > 1)", index, version));
+				return;
+			}
+			
+			while (reader.available() > 0) {
+				int w = reader.readInt();
+				int x = reader.readInt();
+				int y = reader.readInt();
+				int z = reader.readInt();
+				long updateTime = reader.readLong();
+				float growth = reader.readFloat();
+
+				Coords coords = new Coords(w, x, y, z);
+				Plant plant = new Plant(updateTime, growth);
+				
+				World world = plugin.getServer().getWorld(WorldID.getMCID(coords.w));
+
+				// if the plant does not correspond to an actual crop, don't load it
+				if (!plugin.getGrowthConfigs().containsKey(world.getBlockAt(x, y, z).getType())) {
+					continue;
+				}
+
+				// TODO MARK: this code seems very similar to
+				// RealisticBiomes.growAndPersistBlock()
+				// grow the block
+				Block block = world.getBlockAt(x, y, z);
+				GrowthConfig growthConfig = plugin.getGrowthConfigs().get(
+						block.getType());
+				if (growthConfig.isPersistent()) {
+					double growthAmount = growthConfig.getRate(block)
+							* plant.setUpdateTime(System.currentTimeMillis() / 1000L);
+					plant.addGrowth((float) growthAmount);
+
+					// and update the plant growth
+					plugin.getBlockGrower().growBlock(block, coords,
+							plant.getGrowth());
+				}
+				// if the plant isn't finished growing, add it to the
+				// plants
+				if (!(plant.getGrowth() >= 1.0)) {
+					plants.put(new Coords(w, x, y, z), plant);
+					RealisticBiomes.doLog(Level.FINER, "PlantChunk.load(): plant not finished growing, adding to plants list");
+				}
+			}
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
 	}
 
 }

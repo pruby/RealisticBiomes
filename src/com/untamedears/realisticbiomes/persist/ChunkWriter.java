@@ -20,36 +20,40 @@ import com.untamedears.realisticbiomes.RealisticBiomes;
  *
  */
 public class ChunkWriter {
-	public static PreparedStatement deleteOldDataStmt = null;
 	public static PreparedStatement deleteChunkStmt = null;
 	public static PreparedStatement addChunkStmt = null;
 	public static PreparedStatement updatePlantStmt = null;
 	public static PreparedStatement getLastChunkIdStmt = null;
-	public static PreparedStatement addPlantStmt = null;
 	public static PreparedStatement deleteOldPlantsStmt = null;
+	public static PreparedStatement deleteOldOldPlantsStmt = null;
+	public static PreparedStatement writePlantBlockStmt = null;
 	public static Connection writeConnection;
 	public static Connection readConnection;
-	
+
 	public static PreparedStatement loadPlantsStmt = null;
+	public static PreparedStatement loadPlantBlockStmt = null;
 	
 	public ChunkWriter(Connection writeConn, Connection readConn,  PersistConfig config) {
 
 		try {
 			
 			writeConnection = writeConn;
-			deleteOldDataStmt = writeConn.prepareStatement(String.format("DELETE FROM %s_plant WHERE chunkid = ?", config.prefix));
 			
 			addChunkStmt = writeConn.prepareStatement(String.format("INSERT INTO %s_chunk (w, x, z) VALUES (?, ?, ?)", config.prefix));
 			getLastChunkIdStmt = writeConn.prepareStatement("SELECT LAST_INSERT_ID()");	
-			
-			addPlantStmt = writeConn.prepareStatement(String.format("INSERT INTO %s_plant (chunkid, w, x, y, z, date, growth) VALUES (?, ?, ?, ?, ?, ?, ?)", config.prefix));
+
+			writePlantBlockStmt = writeConn.prepareStatement(String.format("INSERT INTO %s_plant_chunk (chunkid, data) VALUES (?, ?)", config.prefix));
 			// don't need for now,...maybe later?
 			//updatePlantStmt = writeConn.prepareStatement(String.format("UPDATE %s_plant SET date = ?, growth = ? where chunkid = ?", config.prefix));
-			deleteOldPlantsStmt = writeConn.prepareStatement(String.format("DELETE FROM %s_plant WHERE chunkid = ?", config.prefix));
+			deleteOldPlantsStmt = writeConn.prepareStatement(String.format("DELETE FROM %s_plant_chunk WHERE chunkid = ?", config.prefix));
+			deleteOldOldPlantsStmt = writeConn.prepareStatement(String.format("DELETE FROM %s_plant WHERE chunkid = ?", config.prefix));
 
 			loadPlantsStmt = readConn.prepareStatement(String
 								.format("SELECT w, x, y, z, date, growth FROM %s_plant WHERE chunkid = ?",
 										config.prefix));
+			loadPlantBlockStmt = readConn.prepareStatement(String
+					.format("SELECT data FROM %s_plant_chunk WHERE chunkid = ?",
+							config.prefix));
 
 
 		} catch (SQLException e) {
